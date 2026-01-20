@@ -2,8 +2,11 @@
 
 #include "app/AppConfig.h"
 #include "app/DatabaseManager.h"
+#include "app/ImportWatcher.h"
 
 #include <wx/string.h>
+
+#include <memory>
 
 class AppBootstrap {
 public:
@@ -16,4 +19,5 @@ private:
 
     AppConfig config_;
     DatabaseManager database_;
+    std::unique_ptr<ImportWatcher> import_watcher_;
 };

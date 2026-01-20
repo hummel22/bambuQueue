@@ -29,6 +29,11 @@ struct PlateRecord {
     int status_id = 0;
 };
 
+struct PlateDefinition {
+    int plate_index = 0;
+    wxString name;
+};
+
 struct FilamentRecord {
     int id = 0;
     int job_id = 0;
@@ -61,12 +66,20 @@ public:
     ~DatabaseManager();
 
     bool Initialize(const wxString &data_dir, wxString *error_message);
+    bool InsertImportedJob(const wxString &name,
+                           const wxString &file_path,
+                           const wxString &thumbnail_path,
+                           const wxString &metadata,
+                           const std::vector<PlateDefinition> &plates,
+                           int *job_id,
+                           wxString *error_message);
     bool UpdateJobStatus(int job_id,
                          const wxString &status_name,
                          const wxString &jobs_dir,
                          const wxString &completed_dir,
                          wxString *error_message);
     bool GetCompletedJobsOrdered(std::vector<JobRecord> *jobs, wxString *error_message);
+    bool JobExistsForFile(const wxString &file_path);
 
 private:
     bool RunMigrations(wxString *error_message);

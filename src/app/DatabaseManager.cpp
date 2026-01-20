@@ -21,6 +21,110 @@ DatabaseManager::~DatabaseManager() {
     }
 }
 
+bool DatabaseManager::InsertImportedJob(const wxString &name,
+                                        const wxString &file_path,
+                                        const wxString &thumbnail_path,
+                                        const wxString &metadata,
+                                        const std::vector<PlateDefinition> &plates,
+                                        int *job_id,
+                                        wxString *error_message) {
+    if (!db_) {
+        if (error_message) {
+            *error_message = "Database unavailable for job insert.";
+        }
+        return false;
+    }
+
+    if (!ExecuteStatement("BEGIN TRANSACTION;", error_message)) {
+        return false;
+    }
+
+    int status_id = 0;
+    if (!EnsureStatusExists("imported", false, false, &status_id, error_message)) {
+        ExecuteStatement("ROLLBACK;", nullptr);
+        return false;
+    }
+
+    const char *insert_sql =
+        "INSERT INTO jobs (name, status_id, status, file_path, thumbnail_path, metadata, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'));";
+    sqlite3_stmt *stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, insert_sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        if (error_message) {
+            *error_message = "Database error: unable to prepare job insert.";
+        }
+        ExecuteStatement("ROLLBACK;", nullptr);
+        if (stmt) {
+            sqlite3_finalize(stmt);
+        }
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, name.utf8_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, status_id);
+    sqlite3_bind_text(stmt, 3, "imported", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, file_path.utf8_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, thumbnail_path.utf8_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, metadata.utf8_str(), -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE) {
+        if (error_message) {
+            *error_message = "Database error: unable to insert job.";
+        }
+        sqlite3_finalize(stmt);
+        ExecuteStatement("ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_finalize(stmt);
+
+    const int new_job_id = static_cast<int>(sqlite3_last_insert_rowid(db_));
+    if (!plates.empty()) {
+        const char *plate_sql =
+            "INSERT INTO plates (job_id, plate_index, name, status_id) VALUES (?, ?, ?, ?);";
+        rc = sqlite3_prepare_v2(db_, plate_sql, -1, &stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            if (error_message) {
+                *error_message = "Database error: unable to prepare plate insert.";
+            }
+            ExecuteStatement("ROLLBACK;", nullptr);
+            if (stmt) {
+                sqlite3_finalize(stmt);
+            }
+            return false;
+        }
+
+        for (const auto &plate : plates) {
+            sqlite3_bind_int(stmt, 1, new_job_id);
+            sqlite3_bind_int(stmt, 2, plate.plate_index);
+            sqlite3_bind_text(stmt, 3, plate.name.utf8_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, 4, status_id);
+            rc = sqlite3_step(stmt);
+            if (rc != SQLITE_DONE) {
+                if (error_message) {
+                    *error_message = "Database error: unable to insert plate.";
+                }
+                sqlite3_finalize(stmt);
+                ExecuteStatement("ROLLBACK;", nullptr);
+                return false;
+            }
+            sqlite3_reset(stmt);
+        }
+
+        sqlite3_finalize(stmt);
+    }
+
+    if (!ExecuteStatement("COMMIT;", error_message)) {
+        ExecuteStatement("ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (job_id) {
+        *job_id = new_job_id;
+    }
+    return true;
+}
+
 bool DatabaseManager::Initialize(const wxString &data_dir, wxString *error_message) {
     db_path_ = wxFileName(data_dir, "bambu_queue.db").GetFullPath();
 
@@ -43,6 +147,28 @@ bool DatabaseManager::Initialize(const wxString &data_dir, wxString *error_messa
     }
 
     return true;
+}
+
+bool DatabaseManager::JobExistsForFile(const wxString &file_path) {
+    if (!db_) {
+        return false;
+    }
+
+    const char *query = "SELECT 1 FROM jobs WHERE file_path = ? LIMIT 1;";
+    sqlite3_stmt *stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, query, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        if (stmt) {
+            sqlite3_finalize(stmt);
+        }
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, file_path.utf8_str(), -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);
+    const bool exists = (rc == SQLITE_ROW);
+    sqlite3_finalize(stmt);
+    return exists;
 }
 
 bool DatabaseManager::RunMigrations(wxString *error_message) {

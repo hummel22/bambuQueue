@@ -50,6 +50,11 @@ bool AppBootstrap::Initialize(wxString *error_message) {
         return false;
     }
 
+    import_watcher_ = std::make_unique<ImportWatcher>(config_, database_);
+    if (!import_watcher_->Start(error_message)) {
+        wxLogWarning("AppBootstrap: import watcher failed to start.");
+    }
+
     return true;
 }
 

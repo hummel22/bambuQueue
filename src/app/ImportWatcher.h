@@ -8,11 +8,18 @@
 #include <wx/timer.h>
 
 #include <unordered_map>
+#include <vector>
 
 struct PendingFileInfo {
     wxLongLong size;
     wxDateTime modified_time;
     int stable_checks = 0;
+    bool ready = false;
+};
+
+struct ImportCandidate {
+    wxString path;
+    wxString display_name;
 };
 
 class ImportWatcher : public wxEvtHandler {
@@ -21,6 +28,9 @@ public:
     ~ImportWatcher();
 
     bool Start(wxString *error_message);
+    size_t GetReadyImportCount() const;
+    std::vector<ImportCandidate> GetReadyImports() const;
+    bool ImportFiles(const std::vector<wxString> &paths, wxString *error_message);
 
 private:
     void OnTimer(wxTimerEvent &event);

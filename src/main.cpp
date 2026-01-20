@@ -1,6 +1,6 @@
 #include <wx/wx.h>
 
-#include "app/AppCore.h"
+#include "app/AppBootstrap.h"
 
 #include <memory>
 
@@ -9,7 +9,7 @@ public:
     bool OnInit() override;
 
 private:
-    std::unique_ptr<AppCore> app_core_;
+    std::unique_ptr<AppBootstrap> app_core_;
 };
 
 class BambuQueueFrame final : public wxFrame {
@@ -22,7 +22,7 @@ bool BambuQueueApp::OnInit() {
         return false;
     }
 
-    app_core_ = std::make_unique<AppCore>();
+    app_core_ = std::make_unique<AppBootstrap>();
     wxString error_message;
     if (!app_core_->Initialize(&error_message)) {
         wxMessageBox(

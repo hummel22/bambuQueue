@@ -10,6 +10,8 @@ include(${wxWidgets_USE_FILE})
 
 add_executable(bambu_queue
     src/main.cpp
+    src/app/AppCore.cpp
 )
 
 target_link_libraries(bambu_queue PRIVATE ${wxWidgets_LIBRARIES})
+target_include_directories(bambu_queue PRIVATE src)

@@ -4,6 +4,8 @@
 #include <wx/filename.h>
 #include <wx/log.h>
 
+#include <algorithm>
+
 namespace {
 constexpr int kScanIntervalMs = 2000;
 
@@ -52,6 +54,58 @@ void ImportWatcher::OnTimer(wxTimerEvent &event) {
     ScanImportDirectory();
 }
 
+size_t ImportWatcher::GetReadyImportCount() const {
+    size_t count = 0;
+    for (const auto &entry : pending_files_) {
+        if (entry.second.ready) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+std::vector<ImportCandidate> ImportWatcher::GetReadyImports() const {
+    std::vector<ImportCandidate> candidates;
+    candidates.reserve(pending_files_.size());
+    for (const auto &entry : pending_files_) {
+        if (!entry.second.ready) {
+            continue;
+        }
+        wxFileName file(wxString::FromUTF8(entry.first.c_str()));
+        ImportCandidate candidate;
+        candidate.path = file.GetFullPath();
+        candidate.display_name = file.GetFullName();
+        candidates.push_back(candidate);
+    }
+    std::sort(candidates.begin(),
+              candidates.end(),
+              [](const ImportCandidate &left, const ImportCandidate &right) {
+                  return left.display_name.CmpNoCase(right.display_name) < 0;
+              });
+    return candidates;
+}
+
+bool ImportWatcher::ImportFiles(const std::vector<wxString> &paths, wxString *error_message) {
+    wxString last_error;
+    bool any_failure = false;
+    for (const auto &path : paths) {
+        if (path.empty()) {
+            continue;
+        }
+        if (!importer_.ImportFile(path, &last_error)) {
+            any_failure = true;
+            wxLogWarning("ImportWatcher: failed to import %s (%s)", path, last_error);
+            continue;
+        }
+        pending_files_.erase(path.ToStdString());
+    }
+
+    if (any_failure && error_message) {
+        *error_message = last_error.empty() ? "Unable to import one or more jobs." : last_error;
+    }
+    return !any_failure;
+}
+
 void ImportWatcher::ScanImportDirectory() {
     wxDir dir(config_.import_dir);
     if (!dir.IsOpened()) {
@@ -93,13 +147,7 @@ void ImportWatcher::ScanImportDirectory() {
         }
 
         if (pending.stable_checks >= 2) {
-            wxString error_message;
-            if (!importer_.ImportFile(full_path, &error_message)) {
-                wxLogWarning("ImportWatcher: failed to import %s (%s)",
-                             full_path,
-                             error_message);
-            }
-            pending_files_.erase(full_path.ToStdString());
+            pending.ready = true;
         }
 
         found = dir.GetNext(&filename);

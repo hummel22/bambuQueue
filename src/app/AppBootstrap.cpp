@@ -66,6 +66,10 @@ DatabaseManager &AppBootstrap::GetDatabase() {
     return database_;
 }
 
+ImportWatcher *AppBootstrap::GetImportWatcher() {
+    return import_watcher_.get();
+}
+
 bool AppBootstrap::EnsureDirectories(wxString *error_message) const {
     return EnsureDirectory(config_.data_dir, error_message) &&
            EnsureDirectory(config_.jobs_dir, error_message) &&

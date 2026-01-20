@@ -13,6 +13,7 @@ public:
     bool Initialize(wxString *error_message);
     const AppConfig &GetConfig() const;
     DatabaseManager &GetDatabase();
+    ImportWatcher *GetImportWatcher();
 
 private:
     bool EnsureDirectories(wxString *error_message) const;

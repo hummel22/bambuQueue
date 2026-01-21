@@ -32,14 +32,45 @@ private:
     std::vector<ImportCandidate> candidates_;
 };
 
+class PrinterOnboardingDialog final : public wxDialog {
+public:
+    explicit PrinterOnboardingDialog(wxWindow *parent);
+
+    wxString GetPrinterName() const;
+    wxString GetPrinterHost() const;
+    wxString GetAccessCode() const;
+
+private:
+    void OnSave(wxCommandEvent &event);
+
+    wxTextCtrl *name_input_ = nullptr;
+    wxTextCtrl *host_input_ = nullptr;
+    wxTextCtrl *access_code_input_ = nullptr;
+};
+
 class BambuQueueFrame final : public wxFrame {
 public:
     explicit BambuQueueFrame(AppBootstrap &app_core);
 
 private:
-    struct FilamentInfo {
-        wxString color;
+    struct AmsTray {
+        wxString color_name;
         wxString material;
+    };
+
+    struct FilamentInfo {
+        wxString color_hex;
+        wxString color_name;
+        wxString material;
+    };
+
+    struct PrinterProfile {
+        wxString name;
+        wxString host;
+        wxString access_code;
+        wxString status;
+        bool is_busy = false;
+        std::vector<AmsTray> trays;
     };
 
     struct QueueItem {
@@ -61,6 +92,22 @@ private:
         std::vector<FilamentInfo> filaments;
     };
 
+    struct CompatibilityResult {
+        bool is_compatible = true;
+        std::vector<wxString> mismatches;
+    };
+
+    void ShowPrinterOnboarding();
+    void AddPrinterProfile(const wxString &name, const wxString &host, const wxString &access_code);
+    void EnsureSampleData();
+    void UpdateTipsText();
+    const PrinterProfile *FindPrinterProfile(const wxString &printer_name) const;
+    CompatibilityResult CheckCompatibility(const QueueItem &item) const;
+    bool ValidateDispatch(const QueueItem &item, wxString *message) const;
+    wxString FormatFilamentLabel(const FilamentInfo &filament) const;
+    wxString FormatAmsStatus(const CompatibilityResult &result) const;
+    void ShowQueueEmptyState(const wxString &message);
+    void ShowCompletedEmptyState(const wxString &message);
     void OnImportClicked(wxCommandEvent &event);
     void OnImportTimer(wxTimerEvent &event);
     void UpdateImportBadge();
@@ -79,7 +126,9 @@ private:
 
     AppBootstrap &app_core_;
     wxButton *import_button_ = nullptr;
+    wxButton *add_printer_button_ = nullptr;
     wxStaticText *import_badge_ = nullptr;
+    wxStaticText *tips_text_ = nullptr;
     wxTimer import_timer_;
     wxListCtrl *queue_list_ = nullptr;
     wxListCtrl *completed_list_ = nullptr;
@@ -87,8 +136,11 @@ private:
     wxImageList *plate_images_ = nullptr;
     std::vector<QueueItem> queue_items_;
     std::vector<CompletedItem> completed_items_;
+    std::vector<PrinterProfile> printer_profiles_;
     long drag_index_ = -1;
     bool drag_started_on_handle_ = false;
+    bool queue_loading_ = true;
+    bool completed_loading_ = true;
 };
 
 bool BambuQueueApp::OnInit() {
@@ -172,6 +224,101 @@ ImportDialog::ImportDialog(wxWindow *parent, ImportWatcher &import_watcher)
     PopulateCandidates();
 }
 
+PrinterOnboardingDialog::PrinterOnboardingDialog(wxWindow *parent)
+    : wxDialog(parent,
+               wxID_ANY,
+               "Add a printer",
+               wxDefaultPosition,
+               wxSize(520, 360),
+               wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER) {
+    wxPanel *panel = new wxPanel(this);
+    panel->SetBackgroundColour(wxColour("#F5F6F7"));
+
+    wxBoxSizer *root = new wxBoxSizer(wxVERTICAL);
+    wxBoxSizer *content = new wxBoxSizer(wxVERTICAL);
+
+    wxStaticText *title = new wxStaticText(panel, wxID_ANY, "Connect your first Bambu printer");
+    wxFont title_font = title->GetFont();
+    title_font.SetPointSize(12);
+    title_font.SetWeight(wxFONTWEIGHT_BOLD);
+    title->SetFont(title_font);
+
+    wxStaticText *subtitle = new wxStaticText(
+        panel,
+        wxID_ANY,
+        "Enter the printer IP address and access code shown on the printer screen.");
+    subtitle->SetForegroundColour(wxColour("#6B7178"));
+
+    wxFlexGridSizer *form = new wxFlexGridSizer(2, 12, 12);
+    form->AddGrowableCol(1);
+
+    form->Add(new wxStaticText(panel, wxID_ANY, "Printer name"), 0, wxALIGN_CENTER_VERTICAL);
+    name_input_ = new wxTextCtrl(panel, wxID_ANY);
+    name_input_->SetHint("e.g., X1C-Lab");
+    form->Add(name_input_, 1, wxEXPAND);
+
+    form->Add(new wxStaticText(panel, wxID_ANY, "Printer IP"), 0, wxALIGN_CENTER_VERTICAL);
+    host_input_ = new wxTextCtrl(panel, wxID_ANY);
+    host_input_->SetHint("192.168.1.25");
+    form->Add(host_input_, 1, wxEXPAND);
+
+    form->Add(new wxStaticText(panel, wxID_ANY, "Access code"), 0, wxALIGN_CENTER_VERTICAL);
+    access_code_input_ = new wxTextCtrl(panel, wxID_ANY);
+    access_code_input_->SetHint("8-digit access code");
+    form->Add(access_code_input_, 1, wxEXPAND);
+
+    wxStaticText *tips = new wxStaticText(
+        panel,
+        wxID_ANY,
+        "Tip: Find the access code on the printer touchscreen → Settings → Network.");
+    tips->SetForegroundColour(wxColour("#6B7178"));
+
+    content->Add(title, 0, wxBOTTOM, 6);
+    content->Add(subtitle, 0, wxBOTTOM, 12);
+    content->Add(form, 0, wxEXPAND | wxBOTTOM, 12);
+    content->Add(tips, 0);
+
+    wxBoxSizer *button_row = new wxBoxSizer(wxHORIZONTAL);
+    wxButton *cancel = new wxButton(panel, wxID_CANCEL, "Cancel");
+    wxButton *save = new wxButton(panel, wxID_OK, "Save printer");
+    save->SetDefault();
+    button_row->AddStretchSpacer();
+    button_row->Add(cancel, 0, wxRIGHT, 8);
+    button_row->Add(save, 0);
+
+    root->Add(content, 1, wxEXPAND | wxALL, 16);
+    root->Add(new wxStaticLine(panel), 0, wxEXPAND | wxLEFT | wxRIGHT, 16);
+    root->Add(button_row, 0, wxEXPAND | wxALL, 16);
+
+    panel->SetSizer(root);
+
+    Bind(wxEVT_BUTTON, &PrinterOnboardingDialog::OnSave, this, wxID_OK);
+}
+
+wxString PrinterOnboardingDialog::GetPrinterName() const {
+    return name_input_ ? name_input_->GetValue().Trim(true).Trim(false) : wxString();
+}
+
+wxString PrinterOnboardingDialog::GetPrinterHost() const {
+    return host_input_ ? host_input_->GetValue().Trim(true).Trim(false) : wxString();
+}
+
+wxString PrinterOnboardingDialog::GetAccessCode() const {
+    return access_code_input_ ? access_code_input_->GetValue().Trim(true).Trim(false)
+                              : wxString();
+}
+
+void PrinterOnboardingDialog::OnSave(wxCommandEvent &event) {
+    wxUnusedVar(event);
+    if (GetPrinterHost().empty() || GetAccessCode().empty()) {
+        wxMessageBox("Printer IP and access code are required to continue.",
+                     "Missing details",
+                     wxOK | wxICON_WARNING);
+        return;
+    }
+    EndModal(wxID_OK);
+}
+
 void ImportDialog::PopulateCandidates() {
     candidates_ = import_watcher_.GetReadyImports();
     job_list_->Clear();
@@ -226,6 +373,10 @@ BambuQueueFrame::BambuQueueFrame(AppBootstrap &app_core)
     import_button_->SetBackgroundColour(wxColour("#2FBF9B"));
     import_button_->SetForegroundColour(wxColour("#FFFFFF"));
 
+    add_printer_button_ = new wxButton(panel, wxID_ANY, "Add printer");
+    add_printer_button_->SetBackgroundColour(wxColour("#FFFFFF"));
+    add_printer_button_->SetForegroundColour(wxColour("#2FBF9B"));
+
     import_badge_ = new wxStaticText(panel, wxID_ANY, "");
     import_badge_->SetBackgroundColour(wxColour("#2FBF9B"));
     import_badge_->SetForegroundColour(wxColour("#FFFFFF"));
@@ -234,12 +385,16 @@ BambuQueueFrame::BambuQueueFrame(AppBootstrap &app_core)
 
     header->Add(title, 0, wxALIGN_CENTER_VERTICAL);
     header->AddStretchSpacer();
+    header->Add(add_printer_button_, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
     header->Add(import_badge_, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
     header->Add(import_button_, 0, wxALIGN_CENTER_VERTICAL);
 
     wxStaticText *subtitle =
         new wxStaticText(panel, wxID_ANY, "Manage your queued print jobs.");
     subtitle->SetForegroundColour(wxColour("#6B7178"));
+
+    tips_text_ = new wxStaticText(panel, wxID_ANY, "");
+    tips_text_->SetForegroundColour(wxColour("#6B7178"));
 
     wxBoxSizer *filter_row = new wxBoxSizer(wxHORIZONTAL);
     wxStaticText *completed_label = new wxStaticText(panel, wxID_ANY, "Completed");
@@ -314,7 +469,8 @@ BambuQueueFrame::BambuQueueFrame(AppBootstrap &app_core)
     completed_list_->AssignImageList(plate_images_, wxIMAGE_LIST_SMALL);
 
     root->Add(header, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 16);
-    root->Add(subtitle, 0, wxLEFT | wxRIGHT | wxBOTTOM, 16);
+    root->Add(subtitle, 0, wxLEFT | wxRIGHT | wxTOP, 16);
+    root->Add(tips_text_, 0, wxLEFT | wxRIGHT | wxBOTTOM, 16);
     root->Add(filter_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 16);
     root->Add(queue_list_, 1, wxEXPAND | wxLEFT | wxRIGHT, 16);
     root->Add(new wxStaticLine(panel), 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 16);
@@ -329,6 +485,10 @@ BambuQueueFrame::BambuQueueFrame(AppBootstrap &app_core)
     panel->SetSizer(root);
 
     Bind(wxEVT_BUTTON, &BambuQueueFrame::OnImportClicked, this, import_button_->GetId());
+    Bind(
+        wxEVT_BUTTON,
+        [this](wxCommandEvent &) { ShowPrinterOnboarding(); },
+        add_printer_button_->GetId());
     Bind(wxEVT_TIMER, &BambuQueueFrame::OnImportTimer, this);
     queue_list_->Bind(wxEVT_LIST_BEGIN_DRAG, &BambuQueueFrame::OnQueueBeginDrag, this);
     queue_list_->Bind(wxEVT_LEFT_UP, &BambuQueueFrame::OnQueueLeftUp, this);
@@ -336,9 +496,169 @@ BambuQueueFrame::BambuQueueFrame(AppBootstrap &app_core)
     queue_list_->Bind(wxEVT_CONTEXT_MENU, &BambuQueueFrame::OnQueueContextMenu, this);
     completed_filter_->Bind(wxEVT_CHOICE, &BambuQueueFrame::OnCompletedFilterChanged, this);
     import_timer_.Start(1000);
+    EnsureSampleData();
+    UpdateTipsText();
     UpdateImportBadge();
     PopulateQueueList();
     PopulateCompletedList();
+    if (printer_profiles_.empty()) {
+        CallAfter([this] { ShowPrinterOnboarding(); });
+    }
+}
+
+void BambuQueueFrame::ShowPrinterOnboarding() {
+    PrinterOnboardingDialog dialog(this);
+    if (dialog.ShowModal() != wxID_OK) {
+        return;
+    }
+    AddPrinterProfile(dialog.GetPrinterName(),
+                      dialog.GetPrinterHost(),
+                      dialog.GetAccessCode());
+    UpdateTipsText();
+    PopulateQueueList();
+    PopulateCompletedList();
+}
+
+void BambuQueueFrame::AddPrinterProfile(const wxString &name,
+                                        const wxString &host,
+                                        const wxString &access_code) {
+    PrinterProfile profile;
+    profile.name = name.empty() ? "New Printer" : name;
+    profile.host = host;
+    profile.access_code = access_code;
+    const size_t index = printer_profiles_.size();
+    if (index == 1) {
+        profile.status = "Printing";
+        profile.is_busy = true;
+    } else if (index == 2) {
+        profile.status = "Error";
+        profile.is_busy = false;
+    } else {
+        profile.status = "Idle";
+        profile.is_busy = false;
+    }
+    profile.trays = {{"White", "PLA"}, {"Black", "ABS"}, {"Blue", "PETG"}};
+    printer_profiles_.push_back(profile);
+    EnsureSampleData();
+}
+
+void BambuQueueFrame::EnsureSampleData() {
+    if (!printer_profiles_.empty()) {
+        return;
+    }
+
+    const auto &config_printers = app_core_.GetConfig().printers;
+    if (!config_printers.empty()) {
+        for (const auto &printer : config_printers) {
+            AddPrinterProfile(printer.name, printer.host, printer.access_code);
+        }
+        return;
+    }
+
+    return;
+}
+
+void BambuQueueFrame::UpdateTipsText() {
+    if (printer_profiles_.empty()) {
+        tips_text_->SetLabel(
+            "Tip: Add a printer IP and access code to unlock dispatch and AMS matching.");
+        return;
+    }
+    tips_text_->SetLabel("Tip: Drag the ⋮⋮ handle to reprioritize jobs. Right-click for more actions.");
+}
+
+const BambuQueueFrame::PrinterProfile *BambuQueueFrame::FindPrinterProfile(
+    const wxString &printer_name) const {
+    auto it = std::find_if(
+        printer_profiles_.begin(),
+        printer_profiles_.end(),
+        [&](const PrinterProfile &profile) { return profile.name == printer_name; });
+    if (it == printer_profiles_.end()) {
+        return nullptr;
+    }
+    return &(*it);
+}
+
+BambuQueueFrame::CompatibilityResult BambuQueueFrame::CheckCompatibility(
+    const QueueItem &item) const {
+    CompatibilityResult result;
+    const PrinterProfile *profile = FindPrinterProfile(item.printer);
+    if (!profile) {
+        result.is_compatible = false;
+        result.mismatches.push_back("Printer profile missing");
+        return result;
+    }
+
+    for (const auto &filament : item.filaments) {
+        const auto tray_match = std::find_if(
+            profile->trays.begin(),
+            profile->trays.end(),
+            [&](const AmsTray &tray) {
+                return tray.material.CmpNoCase(filament.material) == 0 &&
+                       tray.color_name.CmpNoCase(filament.color_name) == 0;
+            });
+        if (tray_match == profile->trays.end()) {
+            result.is_compatible = false;
+            result.mismatches.push_back(FormatFilamentLabel(filament));
+        }
+    }
+
+    return result;
+}
+
+bool BambuQueueFrame::ValidateDispatch(const QueueItem &item, wxString *message) const {
+    const PrinterProfile *profile = FindPrinterProfile(item.printer);
+    if (!profile) {
+        if (message) {
+            *message = "Printer profile unavailable. Add the printer IP and access code first.";
+        }
+        return false;
+    }
+    if (profile->is_busy) {
+        if (message) {
+            *message = wxString::Format("Dispatch blocked: %s is currently busy (%s).",
+                                        profile->name,
+                                        profile->status);
+        }
+        return false;
+    }
+    const CompatibilityResult compatibility = CheckCompatibility(item);
+    if (!compatibility.is_compatible) {
+        if (message) {
+            *message =
+                "Dispatch blocked: AMS mismatch for " + item.printer + " (" +
+                wxString::Join(compatibility.mismatches, ", ") + ").";
+        }
+        return false;
+    }
+    return true;
+}
+
+wxString BambuQueueFrame::FormatFilamentLabel(const FilamentInfo &filament) const {
+    if (filament.color_name.empty()) {
+        return filament.material;
+    }
+    return filament.material + " (" + filament.color_name + ")";
+}
+
+wxString BambuQueueFrame::FormatAmsStatus(const CompatibilityResult &result) const {
+    if (result.is_compatible) {
+        return "AMS ready";
+    }
+    return "AMS mismatch: " + wxString::Join(result.mismatches, ", ");
+}
+
+void BambuQueueFrame::ShowQueueEmptyState(const wxString &message) {
+    queue_list_->DeleteAllItems();
+    long row = queue_list_->InsertItem(0, "");
+    queue_list_->SetItem(row, 1, message);
+    queue_list_->SetItemTextColour(row, wxColour("#6B7178"));
+}
+
+void BambuQueueFrame::ShowCompletedEmptyState(const wxString &message) {
+    completed_list_->DeleteAllItems();
+    long row = completed_list_->InsertItem(0, message);
+    completed_list_->SetItemTextColour(row, wxColour("#6B7178"));
 }
 
 void BambuQueueFrame::OnImportClicked(wxCommandEvent &event) {
@@ -379,29 +699,78 @@ void BambuQueueFrame::UpdateImportBadge() {
 }
 
 void BambuQueueFrame::PopulateQueueList() {
-    queue_items_ = {
-        {"Dockside Tool Tray", "job-10421", "P1S-Office", "Idle", "2h 10m", "0.16mm • 0.4mm nozzle",
-         {{"#E11D48", "PLA"}, {"#0EA5E9", "PETG"}}},
-        {"Hydroponic Mount", "job-10422", "X1C-Lab", "Printing", "45m", "0.2mm • Draft profile",
-         {{"#22C55E", "PLA"}, {"#F97316", "PLA"}, {"#111827", "ABS"}, {"#9333EA", "PLA"},}},
-        {"Panel Clips", "job-10425", "A1-Mini", "Error", "1h 5m", "0.12mm • Fine profile",
-         {{"#FACC15", "PETG"}}},
-    };
+    if (queue_loading_) {
+        ShowQueueEmptyState("Loading queue…");
+        queue_loading_ = false;
+        CallAfter([this] { PopulateQueueList(); });
+        return;
+    }
+
+    queue_items_.clear();
+    if (!printer_profiles_.empty()) {
+        const size_t printer_count = printer_profiles_.size();
+        auto printer_for = [&](size_t index) -> const PrinterProfile & {
+            return printer_profiles_[index % printer_count];
+        };
+
+        queue_items_ = {
+            {"Dockside Tool Tray",
+             "job-10421",
+             printer_for(0).name,
+             printer_for(0).status,
+             "2h 10m",
+             "0.16mm • 0.4mm nozzle",
+             {{"#E11D48", "Red", "PLA"}, {"#0EA5E9", "Blue", "PETG"}}},
+            {"Hydroponic Mount",
+             "job-10422",
+             printer_for(1).name,
+             printer_for(1).status,
+             "45m",
+             "0.2mm • Draft profile",
+             {{"#22C55E", "Green", "PLA"},
+              {"#F97316", "Orange", "PLA"},
+              {"#111827", "Black", "ABS"},
+              {"#9333EA", "Purple", "PLA"}}},
+            {"Panel Clips",
+             "job-10425",
+             printer_for(2).name,
+             printer_for(2).status,
+             "1h 5m",
+             "0.12mm • Fine profile",
+             {{"#FACC15", "Yellow", "PETG"}, {"#FFFFFF", "White", "PLA"}}},
+        };
+    }
+
+    if (queue_items_.empty()) {
+        ShowQueueEmptyState("No queued jobs yet. Import a job to get started.");
+        return;
+    }
 
     queue_list_->DeleteAllItems();
     for (size_t index = 0; index < queue_items_.size(); ++index) {
         const auto &item = queue_items_[index];
+        const PrinterProfile *profile = FindPrinterProfile(item.printer);
+        CompatibilityResult compatibility = CheckCompatibility(item);
         long row = queue_list_->InsertItem(static_cast<long>(index), "⋮⋮");
         queue_list_->SetItem(row, 1, item.name);
-        queue_list_->SetItem(row, 2, FormatPrinterStatus(item));
+        queue_list_->SetItem(
+            row,
+            2,
+            profile ? (profile->name + " (" + profile->status + ")") : FormatPrinterStatus(item));
         queue_list_->SetItem(row, 3, item.time);
         queue_list_->SetItem(row, 4, FormatFilaments(item.filaments));
         queue_list_->SetItem(row, 5, "");
         queue_list_->SetItemColumnImage(row, 5, 0);
-        queue_list_->SetItem(row, 6, item.details);
+        queue_list_->SetItem(
+            row,
+            6,
+            item.details + " • " + FormatAmsStatus(compatibility));
         queue_list_->SetItem(row, 7, "Print next");
         if (!item.subtext.empty()) {
             queue_list_->SetItemTextColour(row, wxColour("#1E1F22"));
+        }
+        if (!compatibility.is_compatible) {
+            queue_list_->SetItemTextColour(row, wxColour("#B91C1C"));
         }
         if (index % 2 == 0) {
             queue_list_->SetItemBackgroundColour(row, wxColour("#F8FAFC"));
@@ -410,25 +779,40 @@ void BambuQueueFrame::PopulateQueueList() {
 }
 
 void BambuQueueFrame::PopulateCompletedList() {
+    if (completed_loading_) {
+        ShowCompletedEmptyState("Loading completed jobs…");
+        completed_loading_ = false;
+        CallAfter([this] { PopulateCompletedList(); });
+        return;
+    }
+
     completed_items_.clear();
+    if (printer_profiles_.empty()) {
+        ShowCompletedEmptyState("No completed jobs yet. Add a printer to begin tracking.");
+        return;
+    }
+    const size_t printer_count = printer_profiles_.size();
+    auto printer_for = [&](size_t index) -> const PrinterProfile & {
+        return printer_profiles_[index % printer_count];
+    };
     completed_items_.push_back({"Display Bracket",
-                                "X1C-Lab",
+                                printer_for(1).name,
                                 "1h 40m",
                                 "0.2mm • Standard profile",
                                 wxDateTime::Now() - wxTimeSpan::Hours(8),
-                                {{"#0EA5E9", "PLA"}}});
+                                {{"#0EA5E9", "Blue", "PLA"}}});
     completed_items_.push_back({"Gear Housing",
-                                "P1S-Office",
+                                printer_for(0).name,
                                 "3h 10m",
                                 "0.16mm • 0.4mm nozzle",
                                 wxDateTime::Now() - wxTimeSpan::Days(3),
-                                {{"#22C55E", "PETG"}, {"#111827", "ABS"}}});
+                                {{"#22C55E", "Green", "PETG"}, {"#111827", "Black", "ABS"}}});
     completed_items_.push_back({"Cable Clip Set",
-                                "A1-Mini",
+                                printer_for(2).name,
                                 "25m",
                                 "0.2mm • Draft profile",
                                 wxDateTime::Now() - wxTimeSpan::Days(20),
-                                {{"#F97316", "PLA"}}});
+                                {{"#F97316", "Orange", "PLA"}}});
 
     wxTimeSpan filter_span;
     switch (completed_filter_->GetSelection()) {
@@ -531,22 +915,23 @@ void BambuQueueFrame::OnQueueContextMenu(wxContextMenuEvent &event) {
     menu.Append(1003, "Clear");
     menu.Bind(
         wxEVT_MENU,
-        [this](wxCommandEvent &event) {
-            wxString action;
-            switch (event.GetId()) {
-                case 1001:
-                    action = "Print now";
-                    break;
-                case 1002:
-                    action = "Send to printer";
-                    break;
-                case 1003:
-                    action = "Clear";
-                    break;
-                default:
-                    action = "Action";
+        [this, item_index](wxCommandEvent &event) {
+            if (event.GetId() == 1003) {
+                wxMessageBox("Queue item cleared.", "Queue actions", wxOK | wxICON_INFORMATION);
+                return;
             }
-            wxMessageBox(action + " selected.", "Queue actions", wxOK | wxICON_INFORMATION);
+            if (item_index < 0 || static_cast<size_t>(item_index) >= queue_items_.size()) {
+                return;
+            }
+            wxString message;
+            if (!ValidateDispatch(queue_items_[item_index], &message)) {
+                wxMessageBox(message, "Dispatch blocked", wxOK | wxICON_WARNING);
+                return;
+            }
+            wxString action = event.GetId() == 1001 ? "Print now" : "Send to printer";
+            wxMessageBox(action + " queued for " + queue_items_[item_index].name + ".",
+                         "Queue actions",
+                         wxOK | wxICON_INFORMATION);
         },
         1001,
         1003);
@@ -562,6 +947,11 @@ void BambuQueueFrame::OnQueueActionPrintNext(long item_index) {
     if (item_index < 0 || static_cast<size_t>(item_index) >= queue_items_.size()) {
         return;
     }
+    wxString message;
+    if (!ValidateDispatch(queue_items_[item_index], &message)) {
+        wxMessageBox(message, "Dispatch blocked", wxOK | wxICON_WARNING);
+        return;
+    }
     wxMessageBox("Print next queued for " + queue_items_[item_index].name + ".",
                  "Queue action",
                  wxOK | wxICON_INFORMATION);
@@ -574,7 +964,7 @@ wxString BambuQueueFrame::FormatFilaments(const std::vector<FilamentInfo> &filam
         if (!text.empty()) {
             text += " • ";
         }
-        text += filaments[i].material;
+        text += FormatFilamentLabel(filaments[i]);
     }
     if (filaments.size() > max_chips) {
         text += wxString::Format(" +%zu", filaments.size() - max_chips);

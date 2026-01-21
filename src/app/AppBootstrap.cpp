@@ -55,6 +55,11 @@ bool AppBootstrap::Initialize(wxString *error_message) {
         wxLogWarning("AppBootstrap: import watcher failed to start.");
     }
 
+    printer_coordinator_ = std::make_unique<PrinterCoordinator>(config_, database_);
+    if (!printer_coordinator_->Start(error_message)) {
+        wxLogWarning("AppBootstrap: printer coordinator failed to start.");
+    }
+
     return true;
 }
 

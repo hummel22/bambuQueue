@@ -10,6 +10,7 @@ constexpr int kSchemaVersion = 2;
 
 constexpr const char kCompletedStatusName[] = "completed";
 constexpr const char kRunningStatusName[] = "running";
+constexpr const char kPrintingStatusName[] = "printing";
 }  // namespace
 
 DatabaseManager::DatabaseManager() : db_(nullptr) {}
@@ -257,6 +258,7 @@ bool DatabaseManager::RunMigrations(wxString *error_message) {
         "INSERT OR IGNORE INTO statuses (name, is_completed, is_terminal, created_at) VALUES "
         "('queued', 0, 0, datetime('now')),"
         "('running', 0, 0, datetime('now')),"
+        "('printing', 0, 0, datetime('now')),"
         "('completed', 1, 1, datetime('now')),"
         "('failed', 0, 1, datetime('now')),"
         "('cancelled', 0, 1, datetime('now'));";
@@ -393,6 +395,7 @@ bool DatabaseManager::EnsureSchemaVersion(wxString *error_message) {
                     "(name, is_completed, is_terminal, created_at) VALUES "
                     "('queued', 0, 0, datetime('now')),"
                     "('running', 0, 0, datetime('now')),"
+                    "('printing', 0, 0, datetime('now')),"
                     "('completed', 1, 1, datetime('now')),"
                     "('failed', 0, 1, datetime('now')),"
                     "('cancelled', 0, 1, datetime('now'));";
@@ -675,7 +678,8 @@ bool DatabaseManager::UpdateJobStatus(int job_id,
     sqlite3_bind_int(stmt, 2, new_status_id);
     sqlite3_bind_text(stmt, 3, updated_file_path.utf8_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 4, updated_thumbnail_path.utf8_str(), -1, SQLITE_TRANSIENT);
-    const bool is_running = status_name.CmpNoCase(kRunningStatusName) == 0;
+    const bool is_running = status_name.CmpNoCase(kRunningStatusName) == 0 ||
+                            status_name.CmpNoCase(kPrintingStatusName) == 0;
     sqlite3_bind_int(stmt, 5, is_running ? 1 : 0);
     sqlite3_bind_int(stmt, 6, new_is_completed ? 1 : 0);
     sqlite3_bind_int(stmt, 7, job_id);
@@ -701,6 +705,202 @@ bool DatabaseManager::UpdateJobStatus(int job_id,
                  status_name,
                  current_status_id,
                  new_status_id);
+    return true;
+}
+
+bool DatabaseManager::EnsurePrinters(const std::vector<PrinterDefinition> &printers,
+                                     std::map<wxString, int> *printer_ids,
+                                     wxString *error_message) {
+    if (!printer_ids) {
+        if (error_message) {
+            *error_message = "Database error: printer ID map unavailable.";
+        }
+        return false;
+    }
+
+    printer_ids->clear();
+    const char *lookup_query = "SELECT id FROM printers WHERE name = ? AND host = ? LIMIT 1;";
+    const char *insert_query =
+        "INSERT INTO printers (name, host, created_at) VALUES (?, ?, datetime('now'));";
+
+    for (const auto &printer : printers) {
+        if (printer.name.empty() || printer.host.empty()) {
+            continue;
+        }
+
+        int printer_id = 0;
+        sqlite3_stmt *stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, lookup_query, -1, &stmt, nullptr) != SQLITE_OK) {
+            if (error_message) {
+                *error_message = "Database error: unable to lookup printer.";
+            }
+            wxLogError("DatabaseManager: unable to prepare printer lookup.");
+            return false;
+        }
+
+        sqlite3_bind_text(stmt, 1, printer.name.utf8_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, printer.host.utf8_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            printer_id = sqlite3_column_int(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+
+        if (printer_id == 0) {
+            if (sqlite3_prepare_v2(db_, insert_query, -1, &stmt, nullptr) != SQLITE_OK) {
+                if (error_message) {
+                    *error_message = "Database error: unable to insert printer.";
+                }
+                wxLogError("DatabaseManager: unable to prepare printer insert.");
+                return false;
+            }
+            sqlite3_bind_text(stmt, 1, printer.name.utf8_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, printer.host.utf8_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(stmt) != SQLITE_DONE) {
+                if (error_message) {
+                    *error_message = "Database error: unable to insert printer row.";
+                }
+                wxLogError("DatabaseManager: printer insert failed.");
+                sqlite3_finalize(stmt);
+                return false;
+            }
+            printer_id = static_cast<int>(sqlite3_last_insert_rowid(db_));
+            sqlite3_finalize(stmt);
+        }
+
+        printer_ids->insert({printer.name, printer_id});
+    }
+
+    return true;
+}
+
+bool DatabaseManager::GetNextQueuedJob(int printer_id,
+                                       QueuedJob *job,
+                                       wxString *error_message) {
+    if (!job) {
+        if (error_message) {
+            *error_message = "Database error: queued job output missing.";
+        }
+        return false;
+    }
+
+    const char *query =
+        "SELECT jobs.id, jobs.file_path, plates.plate_index "
+        "FROM jobs "
+        "JOIN statuses ON jobs.status_id = statuses.id "
+        "JOIN plates ON plates.job_id = jobs.id "
+        "WHERE statuses.name = 'queued' "
+        "AND (jobs.printer_id IS NULL OR jobs.printer_id = ?) "
+        "ORDER BY jobs.created_at ASC "
+        "LIMIT 1;";
+
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, query, -1, &stmt, nullptr) != SQLITE_OK) {
+        if (error_message) {
+            *error_message = "Database error: unable to read queued jobs.";
+        }
+        wxLogError("DatabaseManager: unable to prepare queued job query.");
+        return false;
+    }
+
+    sqlite3_bind_int(stmt, 1, printer_id);
+    const int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        job->id = sqlite3_column_int(stmt, 0);
+        job->file_path = wxString::FromUTF8(
+            reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1)));
+        job->plate_index = sqlite3_column_int(stmt, 2);
+    } else if (rc == SQLITE_DONE) {
+        job->id = 0;
+        job->file_path.clear();
+        job->plate_index = 0;
+    } else {
+        if (error_message) {
+            *error_message = "Database error: unable to read queued jobs.";
+        }
+        wxLogError("DatabaseManager: queued job query failed.");
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+bool DatabaseManager::AssignJobToPrinter(int job_id, int printer_id, wxString *error_message) {
+    sqlite3_stmt *stmt = nullptr;
+    const char *query =
+        "UPDATE jobs SET printer_id = ?, updated_at = datetime('now') WHERE id = ?;";
+
+    if (sqlite3_prepare_v2(db_, query, -1, &stmt, nullptr) != SQLITE_OK) {
+        if (error_message) {
+            *error_message = "Database error: unable to prepare job printer update.";
+        }
+        wxLogError("DatabaseManager: unable to prepare job printer update.");
+        return false;
+    }
+
+    sqlite3_bind_int(stmt, 1, printer_id);
+    sqlite3_bind_int(stmt, 2, job_id);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        if (error_message) {
+            *error_message = "Database error: unable to update job printer.";
+        }
+        wxLogError("DatabaseManager: job printer update failed.");
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+bool DatabaseManager::FindActiveJobByFileName(const wxString &file_name,
+                                              int printer_id,
+                                              int *job_id,
+                                              wxString *error_message) {
+    if (!job_id) {
+        if (error_message) {
+            *error_message = "Database error: job id output missing.";
+        }
+        return false;
+    }
+
+    const char *query =
+        "SELECT jobs.id, jobs.file_path, jobs.printer_id "
+        "FROM jobs "
+        "JOIN statuses ON jobs.status_id = statuses.id "
+        "WHERE statuses.is_completed = 0;";
+
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, query, -1, &stmt, nullptr) != SQLITE_OK) {
+        if (error_message) {
+            *error_message = "Database error: unable to read active jobs.";
+        }
+        wxLogError("DatabaseManager: unable to prepare active job query.");
+        return false;
+    }
+
+    const wxString target_name = file_name.Lower();
+    int matched_id = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const wxString path = wxString::FromUTF8(
+            reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1)));
+        const wxFileName file(path);
+        if (file.GetFullName().Lower() != target_name) {
+            continue;
+        }
+
+        const int row_printer_id = sqlite3_column_int(stmt, 2);
+        if (printer_id != 0 && row_printer_id != 0 && row_printer_id != printer_id) {
+            continue;
+        }
+
+        matched_id = sqlite3_column_int(stmt, 0);
+        break;
+    }
+
+    sqlite3_finalize(stmt);
+    *job_id = matched_id;
     return true;
 }
 

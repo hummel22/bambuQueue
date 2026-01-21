@@ -1,7 +1,10 @@
 #pragma once
 
+#include "app/AppConfig.h"
+
 #include <wx/string.h>
 
+#include <map>
 #include <vector>
 
 struct sqlite3;
@@ -60,6 +63,12 @@ struct StatusRecord {
     wxString created_at;
 };
 
+struct QueuedJob {
+    int id = 0;
+    wxString file_path;
+    int plate_index = 0;
+};
+
 class DatabaseManager {
 public:
     DatabaseManager();
@@ -78,6 +87,15 @@ public:
                          const wxString &jobs_dir,
                          const wxString &completed_dir,
                          wxString *error_message);
+    bool EnsurePrinters(const std::vector<PrinterDefinition> &printers,
+                        std::map<wxString, int> *printer_ids,
+                        wxString *error_message);
+    bool GetNextQueuedJob(int printer_id, QueuedJob *job, wxString *error_message);
+    bool AssignJobToPrinter(int job_id, int printer_id, wxString *error_message);
+    bool FindActiveJobByFileName(const wxString &file_name,
+                                 int printer_id,
+                                 int *job_id,
+                                 wxString *error_message);
     bool GetCompletedJobsOrdered(std::vector<JobRecord> *jobs, wxString *error_message);
     bool JobExistsForFile(const wxString &file_path);
 

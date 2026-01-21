@@ -7,6 +7,8 @@
 struct PrinterDefinition {
     wxString name;
     wxString host;
+    wxString access_code;
+    wxString serial;
 };
 
 struct AppConfig {

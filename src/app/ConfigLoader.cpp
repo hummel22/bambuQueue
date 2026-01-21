@@ -79,6 +79,8 @@ bool ConfigLoader::LoadConfig(AppConfig *config, wxString *error_message) {
         PrinterDefinition printer;
         file_config.Read("name", &printer.name, wxEmptyString);
         file_config.Read("host", &printer.host, wxEmptyString);
+        file_config.Read("access_code", &printer.access_code, wxEmptyString);
+        file_config.Read("serial", &printer.serial, wxEmptyString);
         if (!printer.name.empty() || !printer.host.empty()) {
             config->printers.push_back(printer);
         }
@@ -104,6 +106,8 @@ bool ConfigLoader::SaveConfig(const AppConfig &config, wxString *error_message) 
         file_config.SetPath(path);
         file_config.Write("name", config.printers[index].name);
         file_config.Write("host", config.printers[index].host);
+        file_config.Write("access_code", config.printers[index].access_code);
+        file_config.Write("serial", config.printers[index].serial);
     }
 
     if (!file_config.Flush()) {

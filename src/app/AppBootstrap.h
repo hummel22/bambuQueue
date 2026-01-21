@@ -3,6 +3,7 @@
 #include "app/AppConfig.h"
 #include "app/DatabaseManager.h"
 #include "app/ImportWatcher.h"
+#include "app/PrinterCoordinator.h"
 
 #include <wx/string.h>
 
@@ -21,4 +22,5 @@ private:
     AppConfig config_;
     DatabaseManager database_;
     std::unique_ptr<ImportWatcher> import_watcher_;
+    std::unique_ptr<PrinterCoordinator> printer_coordinator_;
 };

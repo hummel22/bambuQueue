@@ -22,5 +22,13 @@ add_executable(bambu_queue
     src/app/ThreeMfImporter.cpp
 )
 
-target_link_libraries(bambu_queue PRIVATE ${wxWidgets_LIBRARIES} SQLite3::SQLite3 CURL::libcurl)
+if(TARGET SQLite3::SQLite3)
+    set(BAMBUQUEUE_SQLITE_TARGET SQLite3::SQLite3)
+elseif(TARGET SQLite::SQLite3)
+    set(BAMBUQUEUE_SQLITE_TARGET SQLite::SQLite3)
+else()
+    set(BAMBUQUEUE_SQLITE_TARGET ${SQLite3_LIBRARIES})
+endif()
+
+target_link_libraries(bambu_queue PRIVATE ${wxWidgets_LIBRARIES} ${BAMBUQUEUE_SQLITE_TARGET} CURL::libcurl)
 target_include_directories(bambu_queue PRIVATE src)
